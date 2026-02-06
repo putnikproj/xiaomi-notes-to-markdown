@@ -1,3 +1,4 @@
 *.bak
 __pycache__
 exported_notes
+.DS_Store

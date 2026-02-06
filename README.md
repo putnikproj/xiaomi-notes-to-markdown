@@ -2,6 +2,10 @@
 
 Converts Xiaomi/MIUI Notes backup files to Markdown.
 
+## Prerequisites
+
+- Python 3 installed - https://www.python.org/downloads/
+
 ## Getting the Backup File
 
 1. On your Xiaomi phone: **Settings → About phone → Back up and restore → Mobile device**
@@ -30,3 +34,11 @@ By default, only active notes are exported. The backup file contains all notes e
 ```bash
 python xiaomi_notes_to_md.py --include-deleted
 ```
+
+To also extract images and audio recordings:
+
+```bash
+python xiaomi_notes_to_md.py --extract-media
+```
+
+Media files are saved to `exported_notes/attachments/` and linked in the markdown files.

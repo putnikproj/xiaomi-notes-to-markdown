@@ -17,9 +17,12 @@ python xiaomi_notes_to_md.py <backup_file.bak> [output_directory]
 
 # Include deleted notes from backup history
 python xiaomi_notes_to_md.py --include-deleted
+
+# Extract images and audio files
+python xiaomi_notes_to_md.py --extract-media
 ```
 
-Output defaults to `exported_notes/` directory.
+Output defaults to `exported_notes/` directory. Media files go to `attachments/` subdirectory.
 
 ## Architecture
 
@@ -33,7 +36,9 @@ The script processes MIUI backup files through a pipeline:
 
 3. **Markdown Conversion** (`xml_to_markdown`): Converts Xiaomi's XML format to standard Markdown, handling headers (`<size>`, `<mid-size>`), formatting (`<b>`, `<i>`, `<delete>`), lists, blockquotes, and media references.
 
-4. **Export** (`export_notes`): Writes individual `.md` files with sanitized filenames, handling duplicates with numeric suffixes.
+4. **Media Extraction** (`extract_attachments`): Finds `miui_att/` entries in the backup, detects file types (JPEG, PNG, MP3) by signatures, and extracts binary content.
+
+5. **Export** (`export_notes`, `save_attachments`): Writes individual `.md` files with sanitized filenames, handling duplicates with numeric suffixes. Optionally saves media to `attachments/` and updates markdown links.
 
 ## Data Model
 
@@ -42,5 +47,5 @@ The script processes MIUI backup files through a pipeline:
 ## Known Limitations
 
 - Binary format is reverse-engineered; some notes may not parse correctly
-- Audio attachments exported as `[Audio: fileid]` placeholders
-- Images exported as `[Image: hash]` placeholders (actual media files not extracted)
+- Without `--extract-media`, attachments show as placeholders (`[Audio: fileid]`, `[Image: hash]`)
+- Media extraction supports JPEG, PNG, and MP3 formats

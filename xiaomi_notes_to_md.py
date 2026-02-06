@@ -21,6 +21,14 @@ class Note:
     folder: str = "common"
 
 
+@dataclass
+class Attachment:
+    """Represents an extracted media attachment."""
+    file_id: str
+    extension: str
+    data: bytes
+
+
 def find_notes_section(data: bytes) -> bytes:
     """Find and extract the notes data section from the backup."""
     marker = b'miui_bak/_tmp_bak'
@@ -39,6 +47,89 @@ def find_notes_section(data: bytes) -> bytes:
             break
 
     return data
+
+
+def extract_attachments(data: bytes) -> list[Attachment]:
+    """Extract media attachments (images, audio) from backup data."""
+    attachments = []
+
+    # Find all miui_att/ entries (tar-style headers)
+    entries = []
+    for m in re.finditer(rb'miui_att/([a-f0-9]{40})(\.[a-z0-9]+)?', data):
+        file_id = m.group(1).decode()
+        ext = m.group(2).decode() if m.group(2) else ''
+        entries.append({
+            'id': file_id,
+            'ext': ext,
+            'header_pos': m.start()
+        })
+
+    if not entries:
+        return attachments
+
+    # Process each entry
+    for i, entry in enumerate(entries):
+        header_pos = entry['header_pos']
+        file_id = entry['id']
+
+        # Search region: from header position to next entry (or EOF)
+        # Include some area within header since files may start before +512
+        if i + 1 < len(entries):
+            region_end = entries[i + 1]['header_pos']
+        else:
+            region_end = len(data)
+
+        region = data[header_pos:region_end]
+        ext = entry['ext'].lstrip('.')
+
+        # JPEG detection - search entire region for signature
+        jpeg_start = region.find(b'\xff\xd8\xff')
+        if jpeg_start != -1:
+            jpeg_end = region.find(b'\xff\xd9', jpeg_start)
+            if jpeg_end != -1:
+                attachments.append(Attachment(
+                    file_id=file_id,
+                    extension='jpg',
+                    data=region[jpeg_start:jpeg_end + 2]
+                ))
+                continue
+
+        # PNG detection
+        png_start = region.find(b'\x89PNG\r\n\x1a\n')
+        if png_start != -1:
+            png_end = region.find(b'IEND', png_start)
+            if png_end != -1:
+                attachments.append(Attachment(
+                    file_id=file_id,
+                    extension='png',
+                    data=region[png_start:png_end + 8]
+                ))
+                continue
+
+        # MPEG audio detection - search for sync bytes after header area
+        audio_region = region[100:]  # Skip past filename
+        for j in range(len(audio_region) - 1):
+            if audio_region[j] == 0xff and (audio_region[j + 1] & 0xe0) == 0xe0:
+                # Found MPEG sync, extract until significant null padding
+                audio_data = audio_region[j:]
+                # Find end (trailing nulls)
+                end_pos = len(audio_data)
+                null_count = 0
+                for k in range(len(audio_data) - 1, 0, -1):
+                    if audio_data[k] == 0:
+                        null_count += 1
+                    else:
+                        if null_count > 50:
+                            end_pos = k + 1
+                        break
+                attachments.append(Attachment(
+                    file_id=file_id,
+                    extension=ext if ext else 'mp3',
+                    data=audio_data[:end_pos]
+                ))
+                break
+
+    return attachments
 
 
 def extract_notes(data: bytes, include_deleted: bool = False) -> list[Note]:
@@ -193,27 +284,45 @@ def clean_title(title: str) -> str:
     return title if title else ""
 
 
-def xml_to_markdown(xml_content: str) -> str:
-    """Convert Xiaomi Notes XML markup to Markdown."""
+def xml_to_markdown(xml_content: str, extracted_files: dict[str, str] | None = None) -> str:
+    """Convert Xiaomi Notes XML markup to Markdown.
+
+    Args:
+        xml_content: The XML content to convert
+        extracted_files: Optional dict mapping file_id to relative path of extracted file
+    """
     if not xml_content:
         return ""
 
     content = xml_content
+    extracted_files = extracted_files or {}
 
     # Remove <new-format/> marker
     content = re.sub(r'<new-format\s*/?\s*>', '', content)
 
     # Process sound attachments
+    def replace_audio(m):
+        file_id = m.group(1)
+        if file_id in extracted_files:
+            return f'[Audio]({extracted_files[file_id]})'
+        return f'[Audio: {file_id}]'
+
     content = re.sub(
         r'<sound\s+fileid="([^"]+)"\s*/?>',
-        r'[Audio: \1]',
+        replace_audio,
         content
     )
 
     # Process image references
+    def replace_image(m):
+        file_id = m.group(1)
+        if file_id in extracted_files:
+            return f'![Image]({extracted_files[file_id]})'
+        return f'[Image: {file_id}]'
+
     content = re.sub(
         r'[\x01☺]\s*([a-f0-9]{40})',
-        r'[Image: \1]',
+        replace_image,
         content
     )
 
@@ -324,7 +433,37 @@ def sanitize_filename(title: str) -> str:
     return filename if filename else "untitled"
 
 
-def export_notes(notes: list[Note], output_dir: str) -> int:
+def save_attachments(
+    attachments: list[Attachment],
+    output_dir: Path
+) -> dict[str, str]:
+    """Save attachments to disk and return a mapping of file_id to relative path."""
+    if not attachments:
+        return {}
+
+    attachments_dir = output_dir / 'attachments'
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    file_map = {}
+    for att in attachments:
+        filename = f'{att.file_id}.{att.extension}'
+        filepath = attachments_dir / filename
+        with open(filepath, 'wb') as f:
+            f.write(att.data)
+        # Store relative path for markdown links
+        # Map both with and without extension (XML may reference either way)
+        rel_path = f'attachments/{filename}'
+        file_map[att.file_id] = rel_path
+        file_map[f'{att.file_id}.{att.extension}'] = rel_path
+
+    return file_map
+
+
+def export_notes(
+    notes: list[Note],
+    output_dir: str,
+    extracted_files: dict[str, str] | None = None
+) -> int:
     """Export notes to Markdown files."""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -333,7 +472,7 @@ def export_notes(notes: list[Note], output_dir: str) -> int:
     seen_titles = {}
 
     for note in notes:
-        md_content = xml_to_markdown(note.content)
+        md_content = xml_to_markdown(note.content, extracted_files)
 
         if not md_content or len(md_content.strip()) < 2:
             if note.title and len(note.title) > 2:
@@ -387,6 +526,11 @@ def main():
         action='store_true',
         help='Include deleted notes from backup history'
     )
+    parser.add_argument(
+        '--extract-media',
+        action='store_true',
+        help='Extract images and audio files from backup'
+    )
     args = parser.parse_args()
 
     if args.backup_file:
@@ -416,8 +560,17 @@ def main():
         print("No notes could be extracted.")
         sys.exit(1)
 
+    # Extract media if requested
+    extracted_files = {}
+    if args.extract_media:
+        attachments = extract_attachments(data)
+        if attachments:
+            print(f"Found {len(attachments)} media files")
+            extracted_files = save_attachments(attachments, Path(args.output_dir))
+            print(f"Saved media to: {args.output_dir}/attachments/")
+
     print(f"\nExporting to: {args.output_dir}/")
-    exported = export_notes(notes, args.output_dir)
+    exported = export_notes(notes, args.output_dir, extracted_files)
 
     print(f"\nExported {exported} notes successfully!")
 
