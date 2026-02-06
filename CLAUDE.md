@@ -14,6 +14,9 @@ python xiaomi_notes_to_md.py
 
 # Specify input file and output directory
 python xiaomi_notes_to_md.py <backup_file.bak> [output_directory]
+
+# Include deleted notes from backup history
+python xiaomi_notes_to_md.py --include-deleted
 ```
 
 Output defaults to `exported_notes/` directory.

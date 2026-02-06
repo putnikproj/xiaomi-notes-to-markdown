@@ -5,9 +5,10 @@ Xiaomi Notes Backup to Markdown Converter
 Parses MIUI Notes backup files (.bak) and exports notes as Markdown files.
 """
 
+import argparse
+import html
 import re
 import sys
-import html
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,13 +41,19 @@ def find_notes_section(data: bytes) -> bytes:
     return data
 
 
-def extract_notes(data: bytes) -> list[Note]:
-    """Extract notes from the binary data."""
+def extract_notes(data: bytes, include_deleted: bool = False) -> list[Note]:
+    """Extract notes from the binary data.
+
+    Args:
+        data: Binary backup data
+        include_deleted: If True, include deleted notes from backup history
+    """
     notes = []
     seen_titles = set()
 
     # Find all folder markers (end of each note record)
     # Pattern: z + length_byte + folder_name (common or secret)
+    # Active notes have \x28\x00\x30\x00 (field 6 = 0) before the folder marker
     folder_pattern = re.compile(rb'z.(common|secret)')
     folder_matches = list(folder_pattern.finditer(data))
 
@@ -95,42 +102,43 @@ def extract_notes(data: bytes) -> list[Note]:
             folder=folder_name
         ))
 
-    # Also extract notes using protobuf-style encoding for notes without folder markers
-    pos = 0
-    while pos < len(data) - 3:
-        if data[pos] == 0x12:  # Field 2 tag
-            length = data[pos + 1]
+    # Extract deleted notes from protobuf-style records (only if requested)
+    if include_deleted:
+        pos = 0
+        while pos < len(data) - 3:
+            if data[pos] == 0x12:  # Field 2 tag
+                length = data[pos + 1]
 
-            if 2 <= length <= 200 and pos + 2 + length <= len(data):
-                title_bytes = data[pos + 2:pos + 2 + length]
+                if 2 <= length <= 200 and pos + 2 + length <= len(data):
+                    title_bytes = data[pos + 2:pos + 2 + length]
 
-                try:
-                    title = title_bytes.decode('utf-8')
+                    try:
+                        title = title_bytes.decode('utf-8')
 
-                    # Filter for valid titles
-                    if (any(c.isalpha() for c in title) and
-                        not title.startswith('<') and
-                        not title.startswith('vnd.') and
-                        not title.endswith('.mp3') and
-                        not title.endswith('.jpeg') and
-                        title not in ('false', 'true') and
-                        len(title) >= 2):
+                        # Filter for valid titles
+                        if (any(c.isalpha() for c in title) and
+                            not title.startswith('<') and
+                            not title.startswith('vnd.') and
+                            not title.endswith('.mp3') and
+                            not title.endswith('.jpeg') and
+                            title not in ('false', 'true') and
+                            len(title) >= 2):
 
-                        clean = clean_title(title)
-                        if clean and clean not in seen_titles:
-                            seen_titles.add(clean)
-                            notes.append(Note(
-                                title=clean,
-                                content=clean,  # No content for these
-                                folder="common"
-                            ))
+                            clean = clean_title(title)
+                            if clean and clean not in seen_titles:
+                                seen_titles.add(clean)
+                                notes.append(Note(
+                                    title=clean,
+                                    content=clean,  # No content for these
+                                    folder="common"
+                                ))
 
-                        pos += 2 + length
-                        continue
-                except UnicodeDecodeError:
-                    pass
+                            pos += 2 + length
+                            continue
+                    except UnicodeDecodeError:
+                        pass
 
-        pos += 1
+            pos += 1
 
     return notes
 
@@ -360,17 +368,36 @@ def export_notes(notes: list[Note], output_dir: str) -> int:
 
 def main():
     """Main entry point."""
-    if len(sys.argv) < 2:
+    parser = argparse.ArgumentParser(
+        description='Convert Xiaomi/MIUI Notes backup files to Markdown'
+    )
+    parser.add_argument(
+        'backup_file',
+        nargs='?',
+        help='Path to .bak backup file (auto-detects if not specified)'
+    )
+    parser.add_argument(
+        'output_dir',
+        nargs='?',
+        default='exported_notes',
+        help='Output directory (default: exported_notes)'
+    )
+    parser.add_argument(
+        '--include-deleted',
+        action='store_true',
+        help='Include deleted notes from backup history'
+    )
+    args = parser.parse_args()
+
+    if args.backup_file:
+        bak_path = args.backup_file
+    else:
         bak_files = list(Path('.').glob('*.bak'))
         if not bak_files:
-            print("Usage: python xiaomi_notes_to_md.py <backup_file.bak> [output_directory]")
             print("No .bak file found in current directory")
+            parser.print_help()
             sys.exit(1)
         bak_path = str(bak_files[0])
-    else:
-        bak_path = sys.argv[1]
-
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else 'exported_notes'
 
     print(f"Reading: {bak_path}")
 
@@ -382,15 +409,15 @@ def main():
     notes_data = find_notes_section(data)
     print(f"Notes section: {len(notes_data):,} bytes")
 
-    notes = extract_notes(notes_data)
-    print(f"Found {len(notes)} notes")
+    notes = extract_notes(notes_data, include_deleted=args.include_deleted)
+    print(f"Found {len(notes)} notes" + (" (including deleted)" if args.include_deleted else ""))
 
     if not notes:
         print("No notes could be extracted.")
         sys.exit(1)
 
-    print(f"\nExporting to: {output_dir}/")
-    exported = export_notes(notes, output_dir)
+    print(f"\nExporting to: {args.output_dir}/")
+    exported = export_notes(notes, args.output_dir)
 
     print(f"\nExported {exported} notes successfully!")
 

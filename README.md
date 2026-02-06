@@ -24,3 +24,9 @@ python xiaomi_notes_to_md.py <backup.bak> [output_dir]
 ```
 
 Exported notes go to `exported_notes/` by default.
+
+By default, only active notes are exported. The backup file contains all notes ever created, including deleted ones. To include deleted notes:
+
+```bash
+python xiaomi_notes_to_md.py --include-deleted
+```
