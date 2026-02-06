@@ -18,13 +18,13 @@ Converts Xiaomi/MIUI Notes backup files to Markdown.
 ## Usage
 
 ```bash
-python xiaomi_notes_to_md.py
+python3 xiaomi_notes_to_md.py
 ```
 
 Or specify files explicitly:
 
 ```bash
-python xiaomi_notes_to_md.py <backup.bak> [output_dir]
+python3 xiaomi_notes_to_md.py <backup.bak> [output_dir]
 ```
 
 Exported notes go to `exported_notes/` by default.
@@ -32,13 +32,13 @@ Exported notes go to `exported_notes/` by default.
 By default, only active notes are exported. The backup file contains all notes ever created, including deleted ones. To include deleted notes:
 
 ```bash
-python xiaomi_notes_to_md.py --include-deleted
+python3 xiaomi_notes_to_md.py --include-deleted
 ```
 
 To also extract images and audio recordings:
 
 ```bash
-python xiaomi_notes_to_md.py --extract-media
+python3 xiaomi_notes_to_md.py --extract-media
 ```
 
 Media files are saved to `exported_notes/attachments/` and linked in the markdown files.

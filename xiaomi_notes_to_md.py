@@ -144,7 +144,6 @@ def extract_notes(data: bytes, include_deleted: bool = False) -> list[Note]:
 
     # Find all folder markers (end of each note record)
     # Pattern: z + length_byte + folder_name (common or secret)
-    # Active notes have \x28\x00\x30\x00 (field 6 = 0) before the folder marker
     folder_pattern = re.compile(rb'z.(common|secret)')
     folder_matches = list(folder_pattern.finditer(data))
 
@@ -161,7 +160,11 @@ def extract_notes(data: bytes, include_deleted: bool = False) -> list[Note]:
         segment_end = match.end()
         segment = data[segment_start:segment_end]
 
-        # Find the title using r + length + title + z pattern
+        title = None
+        xml_content = None
+
+        # Try format 1: title in field 14 (0x72 = 'r')
+        # Pattern: r + length + title + z + folder
         title_match = re.search(
             rb'r(.)([\x20-\xff]{1,200}?)z.(?:common|secret)$',
             segment,
@@ -171,11 +174,55 @@ def extract_notes(data: bytes, include_deleted: bool = False) -> list[Note]:
         if title_match:
             title_len = title_match.group(1)[0]
             title_bytes = title_match.group(2)
-            if title_len <= len(title_bytes):
+            if title_len > 0 and title_len <= len(title_bytes):
                 title = title_bytes[:title_len].decode('utf-8', errors='replace')
-            else:
-                title = title_bytes.decode('utf-8', errors='replace')
-        else:
+
+        # Try format 2: title in field 4 (0x22)
+        # This format has: \x22 + varint_length + content ... z + folder
+        if not title or len(title.strip()) < 2:
+            # Find all field 4 entries and use the last valid one as title
+            field4_matches = list(re.finditer(rb'\x22', segment))
+            for fm in reversed(field4_matches):
+                # Parse varint length (can be 1-2 bytes)
+                pos = fm.end()
+                if pos >= len(segment):
+                    continue
+                first_byte = segment[pos]
+                if first_byte & 0x80:  # Multi-byte varint
+                    if pos + 1 >= len(segment):
+                        continue
+                    second_byte = segment[pos + 1]
+                    length = (first_byte & 0x7f) | (second_byte << 7)
+                    content_start = pos + 2
+                else:
+                    length = first_byte
+                    content_start = pos + 1
+
+                if not (2 <= length <= 50000) or content_start + length > len(segment):
+                    continue
+
+                content_bytes = segment[content_start:content_start + length]
+                try:
+                    text = content_bytes.decode('utf-8')
+                    # Clean up: remove XML tags and binary garbage
+                    text = re.sub(r'</?(text|quote|bullet|order|input|hr|sound|new-format)[^>]*>', '', text)
+                    text = re.sub(r'[\x00-\x1f].*$', '', text)  # Remove from first control char
+                    text = text.strip()
+                    # Filter for valid titles (not file hashes, not mime types)
+                    if (any(c.isalpha() for c in text) and
+                        not text.startswith('vnd.') and
+                        not text.startswith('sound fileid=') and
+                        not text.startswith('<') and
+                        not re.match(r'^[a-f0-9]{38,42}', text) and
+                        not text.startswith('/>') and
+                        len(text.strip()) >= 2):
+                        title = text.split('\n')[0]  # Use first line as title
+                        xml_content = text
+                        break
+                except UnicodeDecodeError:
+                    pass
+
+        if not title:
             continue
 
         title = clean_title(title)
@@ -184,8 +231,9 @@ def extract_notes(data: bytes, include_deleted: bool = False) -> list[Note]:
 
         seen_titles.add(title)
 
-        # Extract XML content from this segment
-        xml_content = extract_xml_content(segment.decode('utf-8', errors='replace'))
+        # Extract XML content from this segment if not already found
+        if not xml_content:
+            xml_content = extract_xml_content(segment.decode('utf-8', errors='replace'))
 
         notes.append(Note(
             title=title,
@@ -279,9 +327,16 @@ def clean_title(title: str) -> str:
     title = title.strip()
     title = re.sub(r'^[^\w\dА-Яа-яЁё]+', '', title)
     title = re.sub(r'[^\w\dА-Яа-яЁё!?.\)]+$', '', title)
+    # Remove binary garbage patterns
+    title = re.sub(r'\(0BJ.*$', '', title)
+    title = re.sub(r'text\(.*$', '', title)
+    title = re.sub(r'text$', '', title)  # Remove trailing "text"
+    # Reject titles that are just garbage markers
+    if title.startswith('text') or title.startswith('0BJ'):
+        return ""
     if len(title) > 100:
         title = title[:100]
-    return title if title else ""
+    return title.strip() if title.strip() else ""
 
 
 def xml_to_markdown(xml_content: str, extracted_files: dict[str, str] | None = None) -> str:
